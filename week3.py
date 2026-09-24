@@ -30,28 +30,35 @@ def task1(depth_path, image0_path, image1_path, ko_path):
     A = np.linalg.inv(matrix_k0)
 
     h, w = depth_matrix.shape
-    v, u = np.mgrid[0:h, 0:w]
-    # homogeneous pixels -> rays -> scaled by depth
-    pixels = np.stack([u.ravel(), v.ravel(), np.ones(h * w)])
-    point_cloud = (A @ pixels).T * depth_matrix.reshape(-1, 1)
-
-    # one RGB row per pixel, same raster order as point_cloud, in [0,1]
     gray = image0 if image0.ndim == 2 else image0[:, :, 0]
-    color = np.repeat(gray.reshape(-1, 1) / 255.0, 3, axis=1)
 
-    valid = depth_matrix.reshape(-1) > 0
-    point_cloud = point_cloud[valid]
-    color = color[valid]
+    point_cloud = []
+    color = []
+    for v in range(h):
+        for u in range(w):
+            Z = depth_matrix[v, u]
+            if Z <= 0:
+                continue
+
+            X_i = (A[0, 0] * u + A[0, 1] * v + A[0, 2]) * Z
+            Y_i = (A[1, 0] * u + A[1, 1] * v + A[1, 2]) * Z
+            Z_i = (A[2, 0] * u + A[2, 1] * v + A[2, 2]) * Z
+            point_cloud.append([X_i, Y_i, Z_i])
+
+            # same pixel as the point, gray in [0,1] repeated as RGB
+            c = gray[v, u] / 255.0
+            color.append([c, c, c])
 
     # Create a point cloud object
     pcd = o3d.geometry.PointCloud()
-    pcd.points = o3d.utility.Vector3dVector(point_cloud)
-    pcd.colors = o3d.utility.Vector3dVector(color)
+    pcd.points = o3d.utility.Vector3dVector(np.array(point_cloud))
+    pcd.colors = o3d.utility.Vector3dVector(np.array(color))
     o3d.visualization.draw_geometries([pcd])
 
-def task2():
+def task2(matches_path, image0_path, image1_path):
 
-    return None
+    matches = scipy.io.loadmat(matches_path)
+
 
 
 def task3():
