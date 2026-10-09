@@ -3,18 +3,57 @@ import numpy as np
 import open3d as o3d
 import scipy.io        
 import torch
-from lightglue import LightGlue, SuperPoint
-from lightglue.utils import load_image
-
-def feature_extraction(device):
-
-    superpoint = SuperPoint(max_num_keypoints=2048).eval().to(torch.device)
+import matplotlib.pyplot as plt
+from lightglue import LightGlue, SuperPoint, viz2d
+from lightglue.utils import load_image, rbd
 
 
+def load_images(image1_path, image2_path, device):
+    image1 = load_image(image1_path).to(device)
+    image2 = load_image(image2_path).to(device)
+    return image1, image2
 
-def feature_matching(device):     
+def feature_extraction(device,sp_params, image_pair):
 
-    lightglue = LightGlue(features="superpoint").eval().to(torch.device)
+    superpoint = SuperPoint(max_num_keypoints=sp_params["max_num_keypoints"]).eval().to(device)
+
+    features = {}
+    features["features0"] = superpoint.extract(image_pair[0])
+    features["features1"] = superpoint.extract(image_pair[1])
+
+    ## extract tambem converte para grayscale e dá resize internamente!
+    #### structure of features
+    # features0["keypoints"]        (1, N, 2)   pixel coordinates (x, y)
+    # features0["keypoint_scores"]  (1, N)
+    # features0["descriptors"]      (1, N, 256)
+    
+    return features
+
+
+def feature_matching(device, lg_params, features):     
+
+    lightglue = LightGlue(features="superpoint").eval().to(device)
+
+    with torch.no_grad(): matches_both = lightglue({"image0": features["features0"], "image1": features["features1"]})
+
+
+    features["features0"], features["features1"], matches_both = [rbd(x) for x in (features["features0"], features["features1"], matches_both)]
+
+    matches = matches_both["matches"]    # (K, 2) indices into the two keypoint lists
+    scores = matches_both["scores"]      # (K,) confidence per match
+
+    matched_points = {}
+    matched_points["matched_points0"] = features["features0"]["keypoints"][matches[:, 0]]   # (K, 2) in image A
+    matched_points["matched_points1"] = features["features1"]["keypoints"][matches[:, 1]]   # (K, 2) in image B
+
+    ## Filter matches by comfidence score
+    keep = scores > lg_params["confidence_score_threshold"]
+    result = {
+        "p": matched_points["matched_points0"][keep].cpu().numpy(),
+        "p_prime": matched_points["matched_points1"][keep].cpu().numpy(),
+        "stop": matches_both["stop"],
+    }
+    return result, matched_points
 
 
 def homogrophy(depth_path, ko_path, matches_path):
@@ -137,12 +176,34 @@ def homogrophy(depth_path, ko_path, matches_path):
 def main():
 
     ko_path = 'K.mat'
+    image0_path = 'parede1.jpg'
+    image1_path = 'parede2.jpg'
 
     besta = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    
-    features = feature_extraction(besta)
-    matches = feature_matching(besta)
-    homogrophy(ko_path, matches_path)
+    # Superpoint parameters
+    sp_params = {
+        "max_num_keypoints": 2048,
+    }
+
+    # Lightglue parameters
+    lg_params = {
+        "confidence_score_threshold": 0.5,
+    }
+
+    image_pair = load_images(image0_path, image1_path, besta)
+    features = feature_extraction(besta, sp_params, image_pair)
+    match_results, matched_points = feature_matching(besta, lg_params, features)
+
+    ## see the matches
+    viz2d.plot_images(list(image_pair), titles=["Image 0", "Image 1"])
+    viz2d.plot_matches(match_results["p"], match_results["p_prime"], color="lime", lw=0.2)
+    viz2d.add_text(0, f"{len(match_results['p'])} matches, stopped after {match_results['stop']} layers")
+    plt.show()
 
 
+    #homogrophy(ko_path, matches_path)
+
+
+if __name__ == "__main__":
+    main()
