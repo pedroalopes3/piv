@@ -48,129 +48,148 @@ def feature_matching(device, lg_params, features):
 
     ## Filter matches by comfidence score
     keep = scores > lg_params["confidence_score_threshold"]
-    result = {
-        "p": matched_points["matched_points0"][keep].cpu().numpy(),
-        "p_prime": matched_points["matched_points1"][keep].cpu().numpy(),
-        "stop": matches_both["stop"],
-    }
-    return result, matched_points
+    matched_points["matches_cleanned0"] = matched_points["matched_points0"][keep].cpu().numpy()
+    matched_points["matches_cleanned1"] = matched_points["matched_points1"][keep].cpu().numpy()
+    matched_points["stop"] = matches_both["stop"]
+    
+    return  matched_points
 
 
-def homogrophy(depth_path, ko_path, matches_path):
+def homogrophy(matches):
  
-        depth = scipy.io.loadmat(depth_path)
-        ko = scipy.io.loadmat(ko_path)
-        matches = scipy.io.loadmat(matches_path)
+        matches_0 = matches['matches_cleanned0'] # load das pixels coordinates dos matches para camera 0
+        matches_1 = matches['matches_cleanned1'] # load das pixels coordinates dos matches para camera 1
     
-        depth_matrix = depth['depth_image']
-        matrix_k0 = ko['K']
-        matches_0 = matches['pts0'] # load das pixels coordinates dos matches para camera 0
-        matches_1 = matches['pts1'] # load das pixels coordinates dos matches para camera 1
-    
-        # fazer a multiplicação da matriz K0 com a matriz de profundidade para cada entrada
-        print("\n Arroz...\n")
-    
-        # Point i (X_i, Y_i, Z_i):  A = K_o ^ -1
-        # X_i = (A11 * U_i + A12 * V_i + A13) * Z_i
-        # Y_i = (A21 * U_i + A22 * V_i + A23) * Z_i
-        # Z_i = (A31 * U_i + A32 * V_i + A33) * Z_i
-    
-        A = np.linalg.inv(matrix_k0)
-        points_camera0 = []
-        pixels_camera1 = []
 
-        for i, match in enumerate(matches_0):
-            u, v = match[0], match[1]
-            Z = depth_matrix[round(v), round(u)]
-            if Z <= 0:
-                continue
-    
-            X_i = (A[0, 0] * u + A[0, 1] * v + A[0, 2]) * Z
-            Y_i = (A[1, 0] * u + A[1, 1] * v + A[1, 2]) * Z
-            Z_i = (A[2, 0] * u + A[2, 1] * v + A[2, 2]) * Z
-            points_camera0.append([X_i, Y_i, Z_i])
-            pixels_camera1.append(matches_1[i])
-
-        # normalizar pixeis e coordenadas com z-score em vez de hartley
-        norm_pts_camera0 = []
+        # normalizar pixeis com z-score em vez de hartley
+        norm_matches_camera0 = []
         norm_matches_camera1 = []
 
         # matrizes de transformação:
         # T2D - pixel → pixel normalizado 3x3
         # T3D - ponto 3D → ponto 3D normalizado 4x4
 
-        T2D = np.array([[1 / np.std(pixels_camera1, axis=0)[0], 0, -np.mean(pixels_camera1, axis=0)[0] / np.std(pixels_camera1, axis=0)[0]],
-                        [0, 1 / np.std(pixels_camera1, axis=0)[1], -np.mean(pixels_camera1, axis=0)[1] / np.std(pixels_camera1, axis=0)[1]], 
+        pixels_camera0 = np.array(matches_0)
+        pixels_camera1 = np.array(matches_1)
+
+        T2D0 = np.array([[1 / np.std(pixels_camera0, axis=0)[0], 0, -np.mean(pixels_camera0, axis=0)[0] / np.std(pixels_camera0, axis=0)[0]],
+                        [0, 1 / np.std(pixels_camera0, axis=0)[1], -np.mean(pixels_camera0, axis=0)[1] / np.std(pixels_camera0, axis=0)[1]], 
                           [0, 0, 1]])
 
-        T3D = np.array([[1 / np.std(points_camera0, axis=0)[0], 0, 0, -np.mean(points_camera0, axis=0)[0] / np.std(points_camera0, axis=0)[0]],
-                        [0, 1 / np.std(points_camera0, axis=0)[1], 0, -np.mean(points_camera0, axis=0)[1] / np.std(points_camera0, axis=0)[1]], 
-                        [0, 0, 1 / np.std(points_camera0, axis=0)[2], -np.mean(points_camera0, axis=0)[2] / np.std(points_camera0, axis=0)[2]],
-                        [0, 0, 0, 1]])
+        T2D1 = np.array([[1 / np.std(pixels_camera1, axis=0)[0], 0, -np.mean(pixels_camera1, axis=0)[0] / np.std(pixels_camera1, axis=0)[0]],
+                        [0, 1 / np.std(pixels_camera1, axis=0)[1], -np.mean(pixels_camera1, axis=0)[1] / np.std(pixels_camera1, axis=0)[1]], 
+                        [0, 0, 1]])
 
-        # normalizar os pontos 3D e os matches 2D usando as matrizes de transformação T3D e T2D
-        for i in range(len(points_camera0)):
-            X_i, Y_i, Z_i = points_camera0[i]
-            point_3D_homogeneous = np.array([X_i, Y_i, Z_i, 1])
-            point_3D_normalized = T3D @ point_3D_homogeneous
-            norm_pts_camera0.append(point_3D_normalized[:3])  # Only take the first three coordinates
+        # normalizar os matches 2D usando as matrizes de transformação T2D
+        for i in range(len(pixels_camera0)):
+            u, v = pixels_camera0[i][0], pixels_camera0[i][1]
+            pixel_homogeneous = np.array([u, v, 1])
+            pixel_normalized = T2D0 @ pixel_homogeneous
+            norm_matches_camera0.append(pixel_normalized[:2])  # Only take the first two coordinates
 
+        for i in range(len(pixels_camera1)):
             u, v = pixels_camera1[i][0], pixels_camera1[i][1]
             pixel_homogeneous = np.array([u, v, 1])
-            pixel_normalized = T2D @ pixel_homogeneous
+            pixel_normalized = T2D1 @ pixel_homogeneous
             norm_matches_camera1.append(pixel_normalized[:2])  # Only take the first two coordinates
 
-        # Construir matriz M (2*N x 12) com os pontos normalizados e os matches normalizados  
-        M = np.zeros((2 * len(pixels_camera1), 12))
-        for i in range(len(points_camera0)):
-            X_i_norm, Y_i_norm, Z_i_norm = norm_pts_camera0[i]
-            u_norm, v_norm = norm_matches_camera1[i]
+        # Construir matriz M (2*N x 9) com os matches normalizados  
+        M = np.zeros((2 * len(norm_matches_camera0), 9))
+        for i in range(len(norm_matches_camera0)):
+            u0_norm, v0_norm = norm_matches_camera0[i]
+            u1_norm, v1_norm = norm_matches_camera1[i]
+            vector1 = np.array([u0_norm, v0_norm, 1, 0, 0, 0, -u1_norm * u0_norm, -u1_norm * v0_norm, -u1_norm ])
+            vector2 = np.array([0, 0, 0, u0_norm, v0_norm, 1, -v1_norm * u0_norm, -v1_norm * v0_norm, -v1_norm])
 
-            vector1 = np.array([X_i_norm, Y_i_norm, Z_i_norm, 1, 0, 0, 0, 0, -u_norm * X_i_norm, -u_norm * Y_i_norm, -u_norm * Z_i_norm, -u_norm])
-            vector2 = np.array([0, 0, 0, 0, X_i_norm, Y_i_norm, Z_i_norm, 1, -v_norm * X_i_norm, -v_norm * Y_i_norm, -v_norm * Z_i_norm, -v_norm])
 
-            # construir matrix M (2*N x 12)  N numero de matches
+            # construir matrix M (2*N x 9)  N numero de matches
             M[2 * i, :] = vector1
             M[2 * i + 1, :] = vector2
          
         # Usar SVD para resolver M = U * S * V^T 
         U, S, Vt = np.linalg.svd(M)
         
-        # P é o último vetor de V (ou a última linha de V^T)
-        P_0 = Vt[-1].reshape(3, 4)  
+        # H_0 é o último vetor de V (ou a última linha de V^T)
+        H_0 = Vt[-1].reshape(3, 3)  
 
-        # Desnormalizar P para obter a matriz de projeção final
-        P = np.linalg.inv(T2D) @ P_0 @ T3D
+        # Desnormalizar H_0 para obter a matriz de projeção final
+        H = np.linalg.inv(T2D1) @ H_0 @ T2D0
 
-        if np.linalg.det(P[:, :3]) < 0:
-            P = -P
+        print("\nHomografia (H):\n", H)
 
-        # decomposiçao de P em K, R e t com RQ 
-        Q_qr, R_qr = np.linalg.qr(np.linalg.inv(P[:, :3]))
+        # normalizar para que h[2, 2] = 1
+        scale = H[2, 2]
+        H = H / scale
 
-        #    R = (Q')^T
-        #    K = (R')^(-1)
-        R = Q_qr.T
-        K = np.linalg.inv(R_qr)
+        print("\nHomografia normalizada (H):\n", H)
 
-        print("\nMatriz de rotação da camera 1 (R):\n", R)
-        print("\nMatriz de calibração da camera 1 (K):\n", K)
+        return H
 
-        # forçar K a ter valores positivos na diagonal e normalizar para que K[2, 2] = 1
-        scale = K[2, 2]
-        K = K / scale
-        D = np.diag(np.sign(np.diag(K)))
-        K = K @ D
-        R = D @ R
-        t = np.linalg.inv(K) @ P[:, 3] / scale
+def warp_homography(img, H, out_w, out_h):
+    """Warp img onto an (out_h, out_w) canvas. H maps img pixels -> canvas pixels."""
+    if img.ndim == 2:
+        img = img[..., None]
+    h, w, _ = img.shape
+
+    # 1. every output pixel, in homogeneous coordinates (3 x N)
+    xs, ys = np.meshgrid(np.arange(out_w), np.arange(out_h))
+    dst = np.stack([xs.ravel(), ys.ravel(), np.ones(xs.size)])
+
+    # 2. where it comes from in the source image (inverse mapping)
+    src = np.linalg.inv(H) @ dst
+    u = src[0] / src[2]
+    v = src[1] / src[2]
+
+    # 3. bilinear interpolation between the 4 neighbouring source pixels
+    u0 = np.floor(u).astype(int)
+    v0 = np.floor(v).astype(int)
+    du = (u - u0)[:, None]
+    dv = (v - v0)[:, None]
+
+    valid = (u0 >= 0) & (v0 >= 0) & (u0 < w - 1) & (v0 < h - 1)
+    u0 = np.clip(u0, 0, w - 2)
+    v0 = np.clip(v0, 0, h - 2)
+
+    out = ((1 - du) * (1 - dv) * img[v0,     u0    ] +
+           du       * (1 - dv) * img[v0,     u0 + 1] +
+           (1 - du) * dv       * img[v0 + 1, u0    ] +
+           du       * dv       * img[v0 + 1, u0 + 1])
+
+    out[~valid] = 0                       # pixels that fall outside the source -> black
+    return out.reshape(out_h, out_w, -1).squeeze()
 
 
-        print("\nMatriz de calibração da camera 1 normalizada(K):\n", K)
-        print("\nMatriz de rotação da camera 1 normalizada(R):\n", R)
-        print("\nVetor de translação da camera 1 (t):\n", t)
+def plane_flat_projection(image0_path):
 
-        # save K, R and t to a .mat file
-        scipy.io.savemat('camera1_calibration.mat', {'K': K, 'R': R, 't': t})
+    image0 = plt.imread(image0_path)
+    image0 = image0[..., :3] # remover alpha channel se existir
+    if image0.dtype == np.uint8:
+        image0 = image0 / 255.0  # jpg vem em uint8, interpolação precisa de float em [0, 1]
+
+    # por agora fazer seleçao manual dos pontos do plano
+    plt.figure()
+    plt.imshow(image0)
+    plt.title("click TL, TR, BR, BL")
+    corners = np.array(plt.ginput(4, timeout=0))
+
+    # ordenar cliques para TL, TR, BR, BL (ordem errada -> quadrilátero cruzado -> warp mostra o exterior do plano)
+    d = corners - corners.mean(axis=0)
+    corners = corners[np.argsort(np.arctan2(d[:, 1], d[:, 0]))]   # sentido horário no ecrã (y para baixo)
+    corners = np.roll(corners, -np.argmin(corners.sum(axis=1)), axis=0)  # começar no TL (menor x+y)
+
+    w = 500
+    h = 500
+    plane_corners = np.array([[0, 0], [w, 0], [w, h], [0, h]])  # TL, TR, BR, BL
+
+    # homografia imagem -> plano retificado 
+    H_rect = homogrophy({"matches_cleanned0": corners, "matches_cleanned1": plane_corners})
+    flat = warp_homography(image0, H_rect, w, h)
+
+    plt.figure()
+    plt.imshow(flat)
+    plt.title("plano retificado")
+    plt.show()
+    return flat
 
 
 def main():
@@ -188,21 +207,28 @@ def main():
 
     # Lightglue parameters
     lg_params = {
-        "confidence_score_threshold": 0.5,
+        "confidence_score_threshold": 0.98,
     }
 
     image_pair = load_images(image0_path, image1_path, besta)
+
+    print(f"Matching params: {sp_params} \n {lg_params}")
+
     features = feature_extraction(besta, sp_params, image_pair)
-    match_results, matched_points = feature_matching(besta, lg_params, features)
+    matches = feature_matching(besta, lg_params, features)
 
     ## see the matches
-    viz2d.plot_images(list(image_pair), titles=["Image 0", "Image 1"])
-    viz2d.plot_matches(match_results["p"], match_results["p_prime"], color="lime", lw=0.2)
-    viz2d.add_text(0, f"{len(match_results['p'])} matches, stopped after {match_results['stop']} layers")
-    plt.show()
+    viz2d.plot_images([im.cpu() for im in image_pair], titles=["Image 0", "Image 1"])
+    viz2d.plot_matches(matches["matches_cleanned0"], matches["matches_cleanned1"], color="lime", lw=0.2)
+    viz2d.add_text(0, f"{len(matches['matches_cleanned0'])} matches, stopped after {matches['stop']} layers")
+    plt.show(block=False)
+    plt.pause(5)   
 
 
-    #homogrophy(ko_path, matches_path)
+
+    H = homogrophy(matches)
+
+    plane_flat_projection(image0_path)
 
 
 if __name__ == "__main__":
